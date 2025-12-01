@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: yii2_nginx_new
+    ports:
+      - "80:80"
+    volumes:
+      - ./:/var/www/yii2-advanced
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - php
+    networks:
+      - yii2-network
+
+  php:
+    build:
+      context: ./docker/php
+      dockerfile: Dockerfile
+    container_name: yii2_php_new
+    volumes:
+      - ./:/var/www/yii2-advanced
+    environment:
+      - YII_ENV=dev
+      - YII_DEBUG=1
+    depends_on:
+      - mysql
+    networks:
+      - yii2-network
+
+  mysql:
+    image: mysql:8.0
+    container_name: yii2_mysql_new
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: yii2advanced
+      MYSQL_USER: yii2user
+      MYSQL_PASSWORD: yii2pass
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - yii2-network
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: yii2_phpmyadmin_new
+    ports:
+      - "8082:80"
+    environment:
+      PMA_HOST: mysql
+      MYSQL_ROOT_PASSWORD: root
+    depends_on:
+      - mysql
+    networks:
+      - yii2-network
+
+volumes:
+  mysql-data:
+
+networks:
+  yii2-network:
+    driver: bridge
