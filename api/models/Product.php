@@ -1,43 +1,14 @@
 <?php
 
 namespace api\models;
-
-use frontend\models\Categories;
-use frontend\models\OrderItems;
-use frontend\models\ProductDetails;
-use frontend\models\ProductStock;
-use Yii;
+use common\models\Products;
+use common\models\ProductViewLog;
 use yii\behaviors\TimestampBehavior;
 
-/**
- * This is the model class for table "products".
- *
- * @property int $id
- * @property int $category_id
- * @property string $name
- * @property string|null $description
- * @property float $price
- * @property float|null $discount_price
- * @property string|null $images
- * @property int $created_at
- * @property int $updated_at
- *
- * @property Categories $category
- * @property OrderItems[] $orderItems
- * @property ProductDetails[] $productDetails
- * @property ProductStock[] $productStocks
- */
-class Product extends \yii\db\ActiveRecord
+
+
+class Product extends Products
 {
-
-
-    /**
-     * {@inheritdoc}
-     */
-    public static function tableName()
-    {
-        return 'products';
-    }
 
     public function behaviors()
     {
@@ -51,40 +22,7 @@ class Product extends \yii\db\ActiveRecord
         ];
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function rules()
-    {
-        return [
-            [['description', 'discount_price', 'images'], 'default', 'value' => null],
-            [['category_id', 'name', 'price'], 'required'],
-            [['category_id', 'created_at', 'updated_at'], 'integer'],
-            [['description'], 'string'],
-            [['price', 'discount_price'], 'number'],
-            [['images'], 'safe'],
-            [['name'], 'string', 'max' => 255],
-            [['category_id'], 'exist', 'skipOnError' => true, 'targetClass' => Categories::class, 'targetAttribute' => ['category_id' => 'id']],
-        ];
-    }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function attributeLabels()
-    {
-        return [
-            'id' => 'ID',
-            'category_id' => 'Category ID',
-            'name' => 'Name',
-            'description' => 'Description',
-            'price' => 'Price',
-            'discount_price' => 'Discount Price',
-            'images' => 'Images',
-            'created_at' => 'Created At',
-            'updated_at' => 'Updated At',
-        ];
-    }
 
     public function fields()
     {
@@ -96,55 +34,45 @@ class Product extends \yii\db\ActiveRecord
             'price',
             'discount_price',
             'images',
+            'views',
             'category',
+            'rating_avg',
+            'rating_count',
         ];
     }
-    public function extraFields()
-    {
+
+    public function extraFields(){
         return [
-            'created_at',
-            'updated_at'
+            'productReviews',
+            'productDetails',
+            'productStocks',
         ];
     }
 
-    /**
-     * Gets query for [[Category]].
-     *
-     * @return \yii\db\ActiveQuery
-     */
-    public function getCategory()
+    public function registerView()
     {
-        return $this->hasOne(Categories::class, ['id' => 'category_id']);
-    }
+        $ip = \Yii::$app->request->userIP;
+        $timeLimit = time() - 3600; // 1 час
 
-    /**
-     * Gets query for [[OrderItems]].
-     *
-     * @return \yii\db\ActiveQuery
-     */
-    public function getOrderItems()
-    {
-        return $this->hasMany(OrderItems::class, ['product_id' => 'id']);
-    }
+        $exists = ProductViewLog::find()
+            ->where([
+                'product_id' => $this->id,
+                'ip' => $ip,
+            ])
+            ->andWhere(['>', 'created_at', $timeLimit])
+            ->exists();
 
-    /**
-     * Gets query for [[ProductDetails]].
-     *
-     * @return \yii\db\ActiveQuery
-     */
-    public function getProductDetails()
-    {
-        return $this->hasMany(ProductDetails::class, ['product_id' => 'id']);
-    }
+        if (!$exists) {
+            $log = new ProductViewLog();
+            $log->product_id = $this->id;
+            $log->ip = $ip;
+            $log->created_at = time();
+            $log->save(false);
 
-    /**
-     * Gets query for [[ProductStocks]].
-     *
-     * @return \yii\db\ActiveQuery
-     */
-    public function getProductStocks()
-    {
-        return $this->hasMany(ProductStock::class, ['product_id' => 'id']);
+            // атомарно
+            $this->updateCounters(['views' => 1]);
+            $this->refresh();
+        }
     }
 
 }

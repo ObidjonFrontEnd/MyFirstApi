@@ -3,211 +3,135 @@
 namespace common\models;
 
 use Yii;
-use yii\base\NotSupportedException;
 use yii\behaviors\TimestampBehavior;
 use yii\db\ActiveRecord;
 use yii\web\IdentityInterface;
+use yii\filters\RateLimitInterface;
 
-/**
- * User model
- *
- * @property integer $id
- * @property string $username
- * @property string $password_hash
- * @property string $password_reset_token
- * @property string $verification_token
- * @property string $email
- * @property string $auth_key
- * @property integer $status
- * @property integer $created_at
- * @property integer $updated_at
- * @property string $password write-only password
- */
-class User extends ActiveRecord implements IdentityInterface
+// JWT библиотеки Lcobucci
+use Lcobucci\JWT\Configuration;
+use Lcobucci\JWT\Signer\Hmac\Sha256;
+use Lcobucci\JWT\Signer\Key\InMemory;
+use Lcobucci\JWT\Validation\Constraint\SignedWith;
+use Lcobucci\JWT\Validation\Constraint\ValidAt;
+use Lcobucci\Clock\SystemClock;
+
+class User extends ActiveRecord implements IdentityInterface, RateLimitInterface
 {
     const STATUS_DELETED = 0;
     const STATUS_INACTIVE = 9;
     const STATUS_ACTIVE = 10;
 
+    // Секретный ключ (должен совпадать в AuthController и здесь)
+    const JWT_SECRET = 'BAW_SECRET_KEY_MINIMUM_32_CHARS_123456789012345';
 
-    /**
-     * {@inheritdoc}
-     */
-    public static function tableName()
-    {
-        return '{{%user}}';
+    public static function tableName() { return '{{%users}}'; }
+
+    public function behaviors() { return [TimestampBehavior::class]; }
+
+    // --- RATE LIMIT (Защита от парсинга) ---
+    public function getRateLimit($request, $action) {
+        // Гостям (ID=0) 5 запросов в 30 сек, авторизованным 100 запросов в 60 сек
+        return ($this->id === 0) ? [5, 30] : [100, 60];
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function behaviors()
-    {
-        return [
-            TimestampBehavior::class,
-        ];
+    public function loadAllowance($request, $action) {
+        $cacheKey = 'rate_limit_' . ($this->id ?: Yii::$app->request->userIP);
+        $data = Yii::$app->cache->get($cacheKey);
+        return $data ?: [$this->getRateLimit($request, $action)[0], time()];
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function rules()
-    {
-        return [
-            ['status', 'default', 'value' => self::STATUS_INACTIVE],
-            ['status', 'in', 'range' => [self::STATUS_ACTIVE, self::STATUS_INACTIVE, self::STATUS_DELETED]],
-        ];
+    public function saveAllowance($request, $action, $allowance, $timestamp) {
+        $cacheKey = 'rate_limit_' . ($this->id ?: Yii::$app->request->userIP);
+        Yii::$app->cache->set($cacheKey, [$allowance, $timestamp], 3600);
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public static function findIdentity($id)
-    {
-        return static::findOne(['id' => $id, 'status' => self::STATUS_ACTIVE]);
-    }
-
-    /**
-     * {@inheritdoc}
-     */
+    // --- JWT IDENTITY (Поиск пользователя по токену) ---
     public static function findIdentityByAccessToken($token, $type = null)
     {
-        throw new NotSupportedException('"findIdentityByAccessToken" is not implemented.');
-    }
+        $config = Configuration::forSymmetricSigner(
+            new Sha256(),
+            InMemory::plainText(self::JWT_SECRET)
+        );
 
-    /**
-     * Finds user by username
-     *
-     * @param string $username
-     * @return static|null
-     */
-    public static function findByUsername($username)
-    {
-        return static::findOne(['username' => $username, 'status' => self::STATUS_ACTIVE]);
-    }
+        try {
+            // 1. Парсим токен
+            $parsedToken = $config->parser()->parse((string) $token);
 
-    /**
-     * Finds user by password reset token
-     *
-     * @param string $token password reset token
-     * @return static|null
-     */
-    public static function findByPasswordResetToken($token)
-    {
-        if (!static::isPasswordResetTokenValid($token)) {
+            // 2. Настраиваем проверку подписи и времени (добавляем 60с leeway)
+            $constraints = [
+                new SignedWith($config->signer(), $config->signingKey()),
+                new ValidAt(new SystemClock(new \DateTimeZone(Yii::$app->timeZone)), new \DateInterval('PT60S'))
+            ];
+
+            // 3. Валидируем
+            if (!$config->validator()->validate($parsedToken, ...$constraints)) {
+                return null;
+            }
+
+            $claims = $parsedToken->claims();
+            $role = $claims->get('role');
+
+            if ($role === 'guest') {
+                $guest = new static();
+                $guest->id = 0;
+                $guest->username = 'Guest';
+                return $guest;
+            }
+
+            // Для аутентифицированных пользователей токен ДОЛЖЕН содержать ID
+            // Пробуем 'sub', если нет - пробуем старый формат в 'role' (user:ID)
+            $userId = $claims->get('sub');
+            if (!$userId && is_string($role) && strpos($role, 'user:') === 0) {
+                $userId = str_replace('user:', '', $role);
+            }
+
+            if (!$userId) {
+                return null;
+            }
+
+            // Мы убираем проверку 'status', так как в миграции этого поля нет
+            return static::findOne(['id' => $userId]);
+
+        } catch (\Throwable $e) {
+            Yii::error("JWT Validation error: " . $e->getMessage(), 'api');
             return null;
         }
-
-        return static::findOne([
-            'password_reset_token' => $token,
-            'status' => self::STATUS_ACTIVE,
-        ]);
     }
 
-    /**
-     * Finds user by verification email token
-     *
-     * @param string $token verify email token
-     * @return static|null
-     */
-    public static function findByVerificationToken($token) {
-        return static::findOne([
-            'verification_token' => $token,
-            'status' => self::STATUS_INACTIVE
-        ]);
+    // --- IDENTITY INTERFACE ---
+    public static function findIdentity($id) { return static::findOne(['id' => $id]); }
+    public function getId() { return $this->getPrimaryKey(); }
+    public function getAuthKey() { return $this->auth_key; }
+    public function validateAuthKey($authKey) { return $this->getAuthKey() === $authKey; }
+
+    // --- ВАЛИДАЦИЯ ---
+    public function rules() {
+        return [
+            [['phone', 'username', 'email'], 'required', 'on' => 'create'],
+            ['email', 'email'],
+            ['email', 'unique', 'targetClass' => self::class],
+            ['password', 'string', 'min' => 8], // Исправлено на password
+            ['username', 'string', 'max' => 255],
+            ['username', 'unique'],
+            ['phone', 'match', 'pattern' => '/^\+998\d{9}$/']
+        ];
     }
 
-    /**
-     * Finds out if password reset token is valid
-     *
-     * @param string $token password reset token
-     * @return bool
-     */
-    public static function isPasswordResetTokenValid($token)
-    {
-        if (empty($token)) {
-            return false;
-        }
-
-        $timestamp = (int) substr($token, strrpos($token, '_') + 1);
-        $expire = Yii::$app->params['user.passwordResetTokenExpire'];
-        return $timestamp + $expire >= time();
+    // Исправлено: используем колонку 'password'
+    public function validatePassword($password) {
+        return Yii::$app->security->validatePassword($password, $this->password);
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function getId()
-    {
-        return $this->getPrimaryKey();
+    // Исправлено: сохраняем в колонку 'password'
+    public function setPassword($password) {
+        $this->password = Yii::$app->security->generatePasswordHash($password);
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function getAuthKey()
-    {
-        return $this->auth_key;
-    }
+    public static function findByUsername($username) { return static::findOne(['username' => $username, 'status' => self::STATUS_ACTIVE]); }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function validateAuthKey($authKey)
-    {
-        return $this->getAuthKey() === $authKey;
-    }
+    public function generateAuthKey() { $this->auth_key = Yii::$app->security->generateRandomString(); }
 
-    /**
-     * Validates password
-     *
-     * @param string $password password to validate
-     * @return bool if password provided is valid for current user
-     */
-    public function validatePassword($password)
-    {
-        return Yii::$app->security->validatePassword($password, $this->password_hash);
-    }
-
-    /**
-     * Generates password hash from password and sets it to the model
-     *
-     * @param string $password
-     */
-    public function setPassword($password)
-    {
-        $this->password_hash = Yii::$app->security->generatePasswordHash($password);
-    }
-
-    /**
-     * Generates "remember me" authentication key
-     */
-    public function generateAuthKey()
-    {
-        $this->auth_key = Yii::$app->security->generateRandomString();
-    }
-
-    /**
-     * Generates new password reset token
-     */
-    public function generatePasswordResetToken()
-    {
-        $this->password_reset_token = Yii::$app->security->generateRandomString() . '_' . time();
-    }
-
-    /**
-     * Generates new token for email verification
-     */
-    public function generateEmailVerificationToken()
-    {
-        $this->verification_token = Yii::$app->security->generateRandomString() . '_' . time();
-    }
-
-    /**
-     * Removes password reset token
-     */
-    public function removePasswordResetToken()
-    {
-        $this->password_reset_token = null;
-    }
+    // Поля, которые возвращаются в API (пароль исключен для безопасности)
+    public function fields() { return ['id', 'username', 'phone', 'email']; }
 }

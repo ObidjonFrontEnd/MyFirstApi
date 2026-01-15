@@ -2,8 +2,8 @@
 
 namespace api\controllers;
 
-use api\models\Categories;
-use api\models\Users;
+
+use common\models\User;
 use Yii;
 use yii\data\ActiveDataProvider;
 
@@ -30,7 +30,7 @@ class UserController extends ApiController
 
     public function actionIndex(){
         return new ActiveDataProvider([
-            'query'=> Users::find(),
+            'query'=> User::find(),
             'pagination' => [
                 'pageSize' => 10,
             ]
@@ -38,15 +38,16 @@ class UserController extends ApiController
     }
 
     public function actionView($id){
-        return Users::findOne($id);
+        return User::findOne($id);
     }
 
     public function actionCreate()
     {
-        $model = new Users();
+        $model = new User();
         $model->load(Yii::$app->request->post(), '');
-
+        $model->setPassword(Yii::$app->request->bodyParams['password']);
         if ($model->save()) {
+
             return $this->success($model, "User created successfully");
         }
 
@@ -56,13 +57,19 @@ class UserController extends ApiController
 
     public function actionUpdate($id)
     {
-        $model = Users::findOne($id);
+        $model = User::findOne($id);
 
         if (!$model) {
             return $this->error("User not found", 404);
         }
 
         $model->load(Yii::$app->request->bodyParams, '');
+
+        // Проверяем, есть ли пароль в запросе
+        $password = Yii::$app->request->bodyParams['password'] ?? null;
+        if ($password) {
+            $model->setPassword($password);
+        }
 
         if ($model->save()) {
             return $this->success($model, "User updated successfully");
@@ -72,9 +79,10 @@ class UserController extends ApiController
     }
 
 
+
     public function actionDelete($id)
     {
-        $model = Users::findOne($id);
+        $model = User::findOne($id);
 
         if ($model && $model->delete()) {
             return ['status' => 'deleted'];

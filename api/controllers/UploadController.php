@@ -49,7 +49,7 @@ class UploadController extends ApiController
 
         if ($fileName) {
             $hostInfo = Yii::$app->request->hostInfo;
-            $url = $hostInfo . '/api/upload/' . $fileName;
+            $url = $hostInfo . '/api/images/' . $fileName;
 
             return $this->success(['url' => $url], 'File uploaded successfully');
         }

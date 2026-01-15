@@ -6,6 +6,7 @@ use api\models\Product;
 
 use Yii;
 use yii\data\ActiveDataProvider;
+use yii\db\Query;
 use yii\rest\Serializer;
 
 
@@ -15,24 +16,31 @@ class ProductController extends ApiController
     {
         $behaviors = parent::behaviors();
 
+        // УБИРАЕМ 'index' и 'view' из except.
+        // Теперь они требуют Bearer Token (хотя бы гостевой).
+        $behaviors['authenticator']['except'] = array_merge(
+            $behaviors['authenticator']['except'] ?? [],
+            ['options'] // Оставляем только options для CORS
+        );
+
         $behaviors['verbs'] = [
             'class' => \yii\filters\VerbFilter::class,
             'actions' => [
-                'index' => ['GET'],
-                'view' => ['GET'],
-                'create' => ['POST'],
-                'update' => ['PUT', 'PATCH'],
-                'delete' => ['DELETE'],
+                'index' => ['GET', 'OPTIONS'],
+                'view' => ['GET', 'OPTIONS'],
+                'create' => ['POST', 'OPTIONS'],
+                'update' => ['PUT', 'PATCH', 'OPTIONS'],
+                'delete' => ['DELETE', 'OPTIONS'],
             ],
         ];
 
         return $behaviors;
     }
+
     public $serializer = [
         'class' => Serializer::class,
         'collectionEnvelope' => 'items',
     ];
-
     protected function serializeData($data)
     {
         $serializer = \Yii::createObject($this->serializer);
@@ -48,13 +56,24 @@ class ProductController extends ApiController
             ]
         ]);
 
+
         return $this->success($this->serializeData($data));
 
     }
 
-    public function actionView($id){
-        return $this->success([Product::findOne($id)]);
+    public function actionView($id)
+    {
+        $model = Product::findOne($id);
+
+        if (!$model) {
+            return $this->error("Продукт не найден", 404);
+        }
+
+        $model->registerView();
+
+        return $this->success($model);
     }
+
 
 
     public function actionCreate()

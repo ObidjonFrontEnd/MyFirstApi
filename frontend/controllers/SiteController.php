@@ -3,6 +3,7 @@
 namespace frontend\controllers;
 
 use frontend\models\ResendVerificationEmailForm;
+use frontend\models\UploudForm;
 use frontend\models\VerifyEmailForm;
 use Yii;
 use yii\base\InvalidArgumentException;
@@ -75,7 +76,15 @@ class SiteController extends Controller
      */
     public function actionIndex()
     {
-        return $this->render('index');
+        $model = new UploudForm();
+
+        if ($model->load(Yii::$app->request->post())) {
+            if ($model->uploadImage()) {
+                Yii::$app->session->setFlash('success', 'Товар успешно создан');
+            }
+        }
+
+        return $this->render('index' , ['model' => $model]);
     }
 
     /**

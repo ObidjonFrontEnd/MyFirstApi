@@ -11,7 +11,20 @@ return [
     'basePath' => dirname(__DIR__),
     'controllerNamespace' => 'backend\controllers',
     'bootstrap' => ['log'],
-    'modules' => [],
+    'modules' => [
+        'admin' => [
+            'class' => 'mdm\admin\Module',
+            'layout' => '@backend/views/layouts/admin.php',// or 'right-menu' or 'top-menu'
+        ],
+    ],
+    'as access' => [
+        'class' => 'mdm\admin\components\AccessControl',
+        'allowActions' => [
+            'site/*',
+            'admin/*', // разрешить доступ к модулю admin без авторизации (временно для настройки)
+            // добавьте другие действия, которые должны быть доступны без авторизации
+        ]
+    ],
     'components' => [
         'request' => [
             'csrfParam' => '_csrf-backend',
@@ -23,7 +36,6 @@ return [
             'identityCookie' => ['name' => '_identity-backend', 'httpOnly' => true],
         ],
         'session' => [
-            // this is the name of the session cookie used for login on the backend
             'name' => 'advanced-backend',
         ],
         'log' => [
@@ -44,8 +56,11 @@ return [
             'baseUrl' => '/admin',
             'scriptUrl' => '/admin/index.php',
             'rules' => [
-                // твои правила
+                '/'=>'site/index',
             ],
+        ],
+        'authManager' => [
+            'class' => 'yii\rbac\DbManager',
         ],
     ],
     'params' => $params,
